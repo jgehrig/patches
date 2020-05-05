@@ -1,0 +1,28 @@
+From f4e56d122e47bf694cf3d02f5904cb09a8cedfa4 Mon Sep 17 00:00:00 2001
+From: John Gehrig <jdg_gehrig@hotmail.com>
+Date: Sun, 5 May 2019 01:34:31 -0400
+Subject: [PATCH] Fixing crash in sddmthemeinstaller.cpp
+
+---
+ sddmthemeinstaller.cpp | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/sddmthemeinstaller.cpp b/sddmthemeinstaller.cpp
+index d08181c..62076fa 100644
+--- a/sddmthemeinstaller.cpp
++++ b/sddmthemeinstaller.cpp
+@@ -72,8 +72,9 @@ int main(int argc, char **argv)
+         KAuth::ExecuteJob *job = action.execute();
+         bool rc = job->exec();
+         if (!rc) {
+-            KMessageBox::sorry(nullptr, i18n("Unable to install theme"), job->errorString());
+-            qWarning() << job->error() << job->errorString();
++            QString errorString = job->errorString();
++            qWarning() << job->error() << errorString;
++            KMessageBox::sorry(nullptr, errorString, i18n("Unable to install theme"));
+             return -1;
+         }
+ 
+-- 
+2.21.0
+

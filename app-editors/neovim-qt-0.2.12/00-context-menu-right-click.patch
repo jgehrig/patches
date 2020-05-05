@@ -1,0 +1,149 @@
+diff --git a/src/gui/mainwindow.cpp b/src/gui/mainwindow.cpp
+index d70e4f2..7bc84c6 100644
+--- a/src/gui/mainwindow.cpp
++++ b/src/gui/mainwindow.cpp
+@@ -49,6 +49,18 @@ void MainWindow::init(NeovimConnector *c)
+ 	m_tabline_bar->addWidget(m_tabline);
+ 	m_tabline_bar->setVisible(m_shell_options.enable_ext_tabline);
+ 
++	// Context menu and actions for right-click
++	m_contextMenu = new QMenu();
++	m_actCut = new QAction(QIcon::fromTheme("edit-cut"), QString("Cut"));
++	m_actCopy = new QAction(QIcon::fromTheme("edit-copy"), QString("Copy"));
++	m_actPaste = new QAction(QIcon::fromTheme("edit-paste"), QString("Paste"));
++	m_actSelectAll = new QAction(QIcon::fromTheme("edit-select-all"), QString("Select All"));
++	m_contextMenu->addAction(m_actCut);
++	m_contextMenu->addAction(m_actCopy);
++	m_contextMenu->addAction(m_actPaste);
++	m_contextMenu->addSeparator();
++	m_contextMenu->addAction(m_actSelectAll);
++
+ 	m_nvim = c;
+ 
+ 	m_tree = new TreeView(c);
+@@ -88,6 +100,16 @@ void MainWindow::init(NeovimConnector *c)
+ 			this, &MainWindow::neovimTablineUpdate);
+ 	connect(m_shell, &Shell::neovimShowtablineSet,
+ 			this, &MainWindow::neovimShowtablineSet);
++	connect(m_shell, &Shell::neovimShowContextMenu,
++			this, &MainWindow::neovimShowContextMenu);
++	connect(m_actCut, &QAction::triggered,
++			this, &MainWindow::neovimSendCut);
++	connect(m_actCopy, &QAction::triggered,
++			this, &MainWindow::neovimSendCopy);
++	connect(m_actPaste, &QAction::triggered,
++			this, &MainWindow::neovimSendPaste);
++	connect(m_actSelectAll, &QAction::triggered,
++			this, &MainWindow::neovimSendSelectAll);
+ 	m_shell->setFocus(Qt::OtherFocusReason);
+ 
+ 	if (m_nvim->errorCause()) {
+@@ -338,6 +360,31 @@ void MainWindow::neovimTablineUpdate(int64_t curtab, QList<Tab> tabs)
+ 	Q_ASSERT(tabs.size() == m_tabline->count());
+ }
+ 
++void MainWindow::neovimShowContextMenu()
++{
++	m_contextMenu->popup(QCursor::pos());
++}
++
++void MainWindow::neovimSendCut()
++{
++	m_nvim->api0()->vim_command_output(R"(normal! "+x)");
++}
++
++void MainWindow::neovimSendCopy()
++{
++	m_nvim->api0()->vim_command(R"(normal! "+y)");
++}
++
++void MainWindow::neovimSendPaste()
++{
++	m_nvim->api0()->vim_command(R"(normal! "+gP)");
++}
++
++void MainWindow::neovimSendSelectAll()
++{
++	m_nvim->api0()->vim_command("normal! ggVG");
++}
++
+ void MainWindow::changeTab(int index)
+ {
+ 	if (!m_shell_options.enable_ext_tabline) {
+diff --git a/src/gui/mainwindow.h b/src/gui/mainwindow.h
+index 5064de3..1374f91 100644
+--- a/src/gui/mainwindow.h
++++ b/src/gui/mainwindow.h
+@@ -48,11 +48,16 @@ private slots:
+ 	void neovimIsUnsupported();
+ 	void neovimShowtablineSet(int);
+ 	void neovimTablineUpdate(int64_t curtab, QList<Tab> tabs);
++	void neovimShowContextMenu();
++	void neovimSendCut();
++	void neovimSendCopy();
++	void neovimSendPaste();
++	void neovimSendSelectAll();
+ 	void extTablineSet(bool);
+ 	void changeTab(int index);
+ private:
+ 	void init(NeovimConnector *);
+-        NeovimConnector *m_nvim;
++	NeovimConnector *m_nvim;
+ 	ErrorWidget *m_errorWidget;
+ 	QSplitter *m_window;
+ 	TreeView *m_tree;
+@@ -63,6 +68,11 @@ private:
+ 	QToolBar *m_tabline_bar;
+ 	ShellOptions m_shell_options;
+ 	bool m_neovim_requested_close;
++	QMenu *m_contextMenu;
++	QAction *m_actCut;
++	QAction *m_actCopy;
++	QAction *m_actPaste;
++	QAction *m_actSelectAll;
+ };
+ 
+ } // Namespace
+diff --git a/src/gui/runtime/plugin/nvim_gui_shim.vim b/src/gui/runtime/plugin/nvim_gui_shim.vim
+index e83b969..7f1f4eb 100644
+--- a/src/gui/runtime/plugin/nvim_gui_shim.vim
++++ b/src/gui/runtime/plugin/nvim_gui_shim.vim
+@@ -206,3 +206,13 @@ endfunction
+ command! GuiTreeviewToggle call <SID>TreeViewToggle()
+ noremap <script> <Plug>GuiTreeviewToggle :call <SID>TreeViewToggle()
+ anoremenu <script> Gui.Treeview.Toggle :call <SID>TreeViewShowToggle()
++
++" Show Right-Click ContextMenu
++function s:GuiShowContextMenu() range
++	call rpcnotify(0, 'Gui', 'ShowContextMenu')
++endfunction
++
++command! -range GuiShowContextMenu call s:GuiShowContextMenu()
++nnoremap <silent><RightMouse> :GuiShowContextMenu<CR>
++inoremap <silent><RightMouse> :GuiShowContextMenu<CR>
++vnoremap <silent><RightMouse> :GuiShowContextMenu<CR>gv
+diff --git a/src/gui/shell.cpp b/src/gui/shell.cpp
+index 271b774..9176316 100644
+--- a/src/gui/shell.cpp
++++ b/src/gui/shell.cpp
+@@ -734,6 +734,8 @@ void Shell::handleNeovimNotification(const QByteArray &name, const QVariantList&
+ 
+ 			qDebug() << "Neovim changed clipboard" << data << type << reg_name << clipboard;
+ 			QGuiApplication::clipboard()->setMimeData(clipData, clipboard);
++		} else if (guiEvName == "ShowContextMenu") {
++			emit neovimShowContextMenu();
+ 		}
+ 		return;
+ 	} else if (name != "redraw") {
+diff --git a/src/gui/shell.h b/src/gui/shell.h
+index 6ec937e..846cd1d 100644
+--- a/src/gui/shell.h
++++ b/src/gui/shell.h
+@@ -73,6 +73,7 @@ signals:
+ 	/// as seen in Tab::tab.
+ 	void neovimTablineUpdate(int64_t curtab, QList<Tab> tabs);
+ 	void neovimShowtablineSet(int);
++	void neovimShowContextMenu();
+ 	void fontChanged();
+ 
+ public slots:

@@ -1,0 +1,12 @@
+diff -r -u xvcd-2018.02.22.orig/src/io_ftdi.c xvcd-2018.02.22/src/io_ftdi.c
+--- xvcd-2018.02.22.orig/src/io_ftdi.c	2019-05-18 00:08:13.052157149 -0400
++++ xvcd-2018.02.22/src/io_ftdi.c	2019-05-18 00:12:24.826166538 -0400
+@@ -69,7 +69,7 @@
+ 	int res;
+ 
+ 	if (product < 0)
+-		product = 0x6010;
++		product = 0x6015;
+ 	if (vendor < 0)
+ 		vendor = 0x0403;
+ 	

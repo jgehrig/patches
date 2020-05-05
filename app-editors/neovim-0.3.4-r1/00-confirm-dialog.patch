@@ -1,0 +1,87 @@
+diff -r 9bd93670a66b runtime/doc/ui.txt
+--- a/runtime/doc/ui.txt	Sun May 12 14:16:58 2019 -0400
++++ b/runtime/doc/ui.txt	Sun May 12 15:10:02 2019 -0400
+@@ -584,4 +584,22 @@
+ 	Hide the wildmenu.
+ 
+ ==============================================================================
++Modal Dialog Events                                                *hui-dialogs*
++
++Only sent if `ext_dialogs` option is set in |ui-options|.
++
++This extension allows the UI to control the display of modal dialogs. These
++dialogs are displayed by vim eval function "confirm(...)".
++
++["confirm_dialog", type, title, message, buttons, dfltbutton)
++	A modal dialog request was triggered by vim. All parameters correspond
++	to eval::confirm(...).
++	type:       Enum: VIM_GENERIC, VIM_ERROR, VIM_INFO, VIM_QUESTION
++	title:      Dialog title string (optional).
++	message:    Prompt description for the user.
++	buttons:    String of button labels separated by \n.
++	dfltbutton: The default button index. ]
++
++==============================================================================
++
+  vim:tw=78:ts=8:noet:ft=help:norl:
+diff -r 9bd93670a66b src/nvim/api/ui_events.in.h
+--- a/src/nvim/api/ui_events.in.h	Sun May 12 14:16:58 2019 -0400
++++ b/src/nvim/api/ui_events.in.h	Sun May 12 15:10:02 2019 -0400
+@@ -114,4 +114,7 @@
+   FUNC_API_SINCE(3) FUNC_API_REMOTE_ONLY;
+ void wildmenu_hide(void)
+   FUNC_API_SINCE(3) FUNC_API_REMOTE_ONLY;
++
++void confirm_dialog(Integer type, String title, String message, String buttons, Integer dfltbutton)
++  FUNC_API_SINCE(6) FUNC_API_REMOTE_ONLY;
+ #endif  // NVIM_API_UI_EVENTS_IN_H
+diff -r 9bd93670a66b src/nvim/message.c
+--- a/src/nvim/message.c	Sun May 12 14:16:58 2019 -0400
++++ b/src/nvim/message.c	Sun May 12 15:10:02 2019 -0400
+@@ -12,6 +12,7 @@
+ #include <string.h>
+ 
+ #include "nvim/vim.h"
++#include "nvim/api/private/helpers.h"
+ #include "nvim/ascii.h"
+ #include "nvim/assert.h"
+ #include "nvim/message.h"
+@@ -2836,6 +2837,19 @@
+     return dfltbutton;  // return default option
+   }
+ 
++  // Remote UIs may handle dialog display
++  if (ui_is_external(kUIDialogs)) {
++
++    ui_call_confirm_dialog(
++      type,
++      cstr_to_string((char*)title),
++      cstr_to_string((char*)message),
++      cstr_to_string((char*)buttons),
++      dfltbutton);
++
++    // Dialog result returned as keystroke, character is an integer value
++    return get_keystroke();
++  }
+ 
+   int save_msg_silent = msg_silent;
+   int oldState = State;
+diff -r 9bd93670a66b src/nvim/ui.h
+--- a/src/nvim/ui.h	Sun May 12 14:16:58 2019 -0400
++++ b/src/nvim/ui.h	Sun May 12 15:10:02 2019 -0400
+@@ -13,6 +13,7 @@
+   kUICmdline = 0,
+   kUIPopupmenu,
+   kUITabline,
++  kUIDialogs,
+   kUIWildmenu,
+ #define kUIGlobalCount (kUIWildmenu+1)
+   kUILinegrid,
+@@ -24,6 +25,7 @@
+   "ext_cmdline",
+   "ext_popupmenu",
+   "ext_tabline",
++  "ext_dialogs",
+   "ext_wildmenu",
+   "ext_linegrid",
+   "ext_hlstate",

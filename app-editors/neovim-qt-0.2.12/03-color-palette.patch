@@ -1,0 +1,322 @@
+diff -u -r neovim-qt-0.2.12.orig/src/gui/mainwindow.cpp neovim-qt-0.2.12/src/gui/mainwindow.cpp
+--- neovim-qt-0.2.12.orig/src/gui/mainwindow.cpp	2019-05-29 02:00:04.234254336 -0400
++++ neovim-qt-0.2.12/src/gui/mainwindow.cpp	2019-05-29 02:00:23.789253258 -0400
+@@ -11,9 +11,13 @@
+ MainWindow::MainWindow(NeovimConnector *c, ShellOptions opts, QWidget *parent)
+ :QMainWindow(parent), m_nvim(0), m_errorWidget(0), m_shell(0),
+ 	m_delayedShow(DelayedShow::Disabled), m_tabline(0), m_tabline_bar(0),
+-	m_shell_options(opts), m_neovim_requested_close(false)
++	m_shell_options(opts), m_neovim_requested_close(false), 
++	m_neovim_gui_style_requested_update(false), m_neovim_gui_font_requested_update (false),
++	m_default_font(font()), m_default_palette(palette())
+ {
+ 	m_errorWidget = new ErrorWidget();
++	m_style = QStyleFactory::create("Fusion");
++	setStyle(m_style);
+ 	m_stack.addWidget(m_errorWidget);
+ 	connect(m_errorWidget, &ErrorWidget::reconnectNeovim,
+ 			this, &MainWindow::reconnectNeovim);
+@@ -32,6 +36,9 @@
+ 		m_nvim->deleteLater();
+ 	}
+ 
++	m_last_fg_color = Qt::white;
++	m_last_bg_color = Qt::black;
++
+ 	m_tabline_bar = addToolBar("tabline");
+ 	m_tabline_bar->setObjectName("tabline");
+ 	m_tabline_bar->setAllowedAreas(Qt::TopToolBarArea);
+@@ -73,6 +80,11 @@
+ 	m_tree->hide();
+ 	m_window->addWidget(m_shell);
+ 
++	m_window->setStyle(m_style);
++	m_tree->setStyle(m_style);
++	m_tabline_bar->setStyle(m_style);
++	m_tabline->setStyle(m_style);
++
+ 	m_stack.insertWidget(1, m_window);
+ 	m_stack.setCurrentIndex(1);
+ 
+@@ -102,6 +114,10 @@
+ 			this, &MainWindow::neovimTablineUpdate);
+ 	connect(m_shell, &Shell::neovimShowtablineSet,
+ 			this, &MainWindow::neovimShowtablineSet);
++	connect(m_shell, SIGNAL(neovimGuiColorsAdaptiveEnabled(bool)), 
++			this, SLOT(neovimGuiColorsAdaptiveChanged(bool)));
++	connect(m_shell, SIGNAL(neovimGuiFontAdaptiveEnabled(bool)), 
++			this, SLOT(neovimGuiFontAdaptiveChanged(bool)));
+ 	connect(m_shell, &Shell::neovimConfirmDialog,
+ 			this, &MainWindow::neovimConfirmDialog);
+ 	connect(m_shell, &Shell::neovimShowContextMenu,
+@@ -121,6 +137,81 @@
+ 	}
+ }
+ 
++void MainWindow::updateStyle()
++{
++	//update font (if needed)
++	if (m_neovim_gui_font_requested_update) {
++		auto newFont = m_shell->font();
++		if (font() != newFont) {
++			setFont(newFont);
++		}
++	}
++	else if (font() != m_default_font) {
++			setFont(m_default_font);
++	}
++
++	if (!m_neovim_gui_style_requested_update) {
++		m_palette = m_default_palette;
++		m_last_bg_color = m_palette.color(QPalette::Window);
++		m_last_fg_color = m_palette.color(QPalette::WindowText);
++		setNewPalette();
++		return;
++	}
++
++	auto bg_color = m_shell->getBackground();
++	auto fg_color = m_shell->getForeground();
++
++	if (bg_color == fg_color) {
++		return;
++	}
++
++	if (m_last_bg_color == bg_color && m_last_fg_color == fg_color){
++		return;
++	} else {
++		m_last_bg_color = bg_color;
++		m_last_fg_color = fg_color;
++	}
++
++	m_palette.setColor(QPalette::Window, bg_color);
++	m_palette.setColor(QPalette::WindowText, fg_color);
++	m_palette.setColor(QPalette::Disabled, QPalette::WindowText, Qt::white);
++
++	m_palette.setColor(QPalette::Base, bg_color);
++	m_palette.setColor(QPalette::AlternateBase, fg_color);
++	m_palette.setColor(QPalette::Text, fg_color);
++	m_palette.setColor(QPalette::Disabled, QPalette::Text, Qt::white); 
++
++	m_palette.setColor(QPalette::Highlight, fg_color);
++	m_palette.setColor(QPalette::Disabled, QPalette::Highlight, Qt::white);
++	m_palette.setColor(QPalette::HighlightedText, bg_color);
++	m_palette.setColor(QPalette::Disabled, QPalette::HighlightedText, Qt::black);
++
++	m_palette.setColor(QPalette::ToolTipBase, bg_color);
++	m_palette.setColor(QPalette::ToolTipText, fg_color);
++
++	m_palette.setColor(QPalette::Button, bg_color);
++	m_palette.setColor(QPalette::ButtonText, fg_color);
++	m_palette.setColor(QPalette::Disabled, QPalette::ButtonText, Qt::white); 
++
++	m_palette.setColor(QPalette::BrightText, Qt::red); //defualt qt color
++	m_palette.setColor(QPalette::Link, Qt::blue); //default qt color
++	m_palette.setColor(QPalette::LinkVisited, Qt::magenta); //default qt color
++
++	m_palette.setColor(QPalette::Dark, QColor(34, 34, 34));
++	m_palette.setColor(QPalette::Shadow, QColor(21, 21, 21));
++
++	setNewPalette();
++}
++
++void MainWindow::setNewPalette() {
++
++	m_window->setPalette(m_palette);
++	m_tree->setPalette(m_palette);
++	m_tabline_bar->setPalette(m_palette);
++	m_tabline->setPalette(m_palette);
++	setPalette(m_palette);
++}
++
+ bool MainWindow::neovimAttached() const
+ {
+ 	return (m_shell != NULL && m_shell->neovimAttached());
+@@ -188,6 +279,8 @@
+ 	} else {
+ 		m_shell->resizeNeovim(m_shell->size());
+ 	}
++
++	updateStyle();
+ }
+ 
+ void MainWindow::neovimMaximized(bool set)
+@@ -511,4 +604,17 @@
+ 	int64_t tab = m_tabline->tabData(index).toInt();
+ 	m_nvim->api2()->nvim_set_current_tabpage(tab);
+ }
++
++void MainWindow::neovimGuiColorsAdaptiveChanged(bool val)
++{
++	m_neovim_gui_style_requested_update = val;
++	updateStyle();
++}
++
++void MainWindow::neovimGuiFontAdaptiveChanged(bool val)
++{
++	m_neovim_gui_font_requested_update = val;
++	updateStyle();
++}
++
+ }  // namespace NeovimQt
+diff -u -r neovim-qt-0.2.12.orig/src/gui/mainwindow.h neovim-qt-0.2.12/src/gui/mainwindow.h
+--- neovim-qt-0.2.12.orig/src/gui/mainwindow.h	2019-05-29 02:00:04.234254336 -0400
++++ neovim-qt-0.2.12/src/gui/mainwindow.h	2019-05-29 02:00:23.789253258 -0400
+@@ -5,6 +5,8 @@
+ #include <QStackedWidget>
+ #include <QTabBar>
+ #include <QSplitter>
++#include <QStyleFactory>
++#include <QPalette>
+ #include "treeview.h"
+ #include "neovimconnector.h"
+ #include "errorwidget.h"
+@@ -57,8 +59,12 @@
+ 	void neovimSendSelectAll();
+ 	void extTablineSet(bool);
+ 	void changeTab(int index);
++	void neovimGuiColorsAdaptiveChanged(bool);
++	void neovimGuiFontAdaptiveChanged(bool);
+ private:
+ 	void init(NeovimConnector *);
++	void updateStyle();
++	void setNewPalette();
+ 	NeovimConnector *m_nvim;
+ 	ErrorWidget *m_errorWidget;
+ 	QSplitter *m_window;
+@@ -70,6 +76,14 @@
+ 	QToolBar *m_tabline_bar;
+ 	ShellOptions m_shell_options;
+ 	bool m_neovim_requested_close;
++	QStyle *m_style;
++	QPalette m_palette;
++	QColor m_last_fg_color;
++	QColor m_last_bg_color;
++	bool m_neovim_gui_style_requested_update;
++	bool m_neovim_gui_font_requested_update;
++	QFont m_default_font;
++	QPalette m_default_palette;
+ 	QMenu *m_contextMenu;
+ 	QAction *m_actCut;
+ 	QAction *m_actCopy;
+diff -u -r neovim-qt-0.2.12.orig/src/gui/runtime/plugin/nvim_gui_shim.vim neovim-qt-0.2.12/src/gui/runtime/plugin/nvim_gui_shim.vim
+--- neovim-qt-0.2.12.orig/src/gui/runtime/plugin/nvim_gui_shim.vim	2019-05-29 02:00:04.234254336 -0400
++++ neovim-qt-0.2.12/src/gui/runtime/plugin/nvim_gui_shim.vim	2019-05-29 02:00:23.789253258 -0400
+@@ -91,6 +91,18 @@
+ endfunction
+ command! -nargs=1 GuiTabline call s:GuiTabline(<args>)
+ 
++" Set Gui Colors adaptive for nvim colorscheme
++function! s:GuiColorsAdaptive(enable) abort
++	call rpcnotify(0, 'Gui', 'ColorsAdaptive', a:enable)
++endfunction
++command! -nargs=1 GuiColorsAdaptive call s:GuiColorsAdaptive(<args>)
++
++" Set Gui Font adaptive fot nvim font
++function! s:GuiFontAdaptive(enable) abort
++	call rpcnotify(0, 'Gui', 'FontAdaptive', a:enable)
++endfunction
++command! -nargs=1 GuiFontAdaptive call s:GuiFontAdaptive(<args>)
++
+ function! s:GuiPopupmenu(enable) abort
+ 	call rpcnotify(0, 'Gui', 'Option', 'Popupmenu', a:enable)
+ endfunction
+diff -u -r neovim-qt-0.2.12.orig/src/gui/shell.cpp neovim-qt-0.2.12/src/gui/shell.cpp
+--- neovim-qt-0.2.12.orig/src/gui/shell.cpp	2019-05-29 02:00:04.234254336 -0400
++++ neovim-qt-0.2.12/src/gui/shell.cpp	2019-05-29 02:00:23.789253258 -0400
+@@ -21,7 +21,7 @@
+ 	m_font_bold(false), m_font_italic(false), m_font_underline(false), m_font_undercurl(false),
+ 	m_mouseHide(true),
+ 	m_hg_foreground(Qt::black), m_hg_background(Qt::white), m_hg_special(QColor()),
+-	m_cursor_color(Qt::white), m_cursor_pos(0,0), m_insertMode(false),
++	m_cursor_color(Qt::white), m_theme_foreground(Qt::black), m_theme_background(Qt::black), m_cursor_pos(0,0), m_insertMode(false),
+ 	m_resizing(false),
+ 	m_mouse_wheel_delta_fraction(0, 0),
+ 	m_neovimBusy(false),
+@@ -546,7 +546,25 @@
+ 		m_pum.hide();
+ 	} else if (name == "mode_info_set") {
+ 		// TODO
+-	} else if (name == "default_colors_set") {
++	} else if (name == "default_colors_set") {
++
++		//"default_colors_set" have 5 parameters
++		// 0 - foreground (default = -1)
++		// 1 - background (default = -1)
++		//...
++
++		//don't handle default 
++		if(opargs.at(0) == -1 || opargs.at(1) == -1) {
++			return;
++		}
++
++		if (opargs.at(0).canConvert<quint64>() && opargs.at(1).canConvert<quint64>()) {
++			auto b_val = opargs.at(1).toLongLong();
++			auto f_val = opargs.at(0).toLongLong();
++			m_theme_background = QRgb(b_val);
++			m_theme_foreground = QRgb(f_val);
++		}
++
+ 		// TODO
+ 	} else if (name == "confirm_dialog") {
+ 		handleConfirmDialog(opargs);
+@@ -755,7 +773,12 @@
+ 		} else if (guiEvName == "ShowContextMenu") {
+ 			emit neovimShowContextMenu();
++		} else if (guiEvName == "ColorsAdaptive" && args.size() >= 2) {
++			emit neovimGuiColorsAdaptiveEnabled(args.at(1).toBool());
++		} else if (guiEvName == "FontAdaptive" && args.size() >= 2) {
++			emit neovimGuiFontAdaptiveEnabled(args.at(1).toBool());
+ 		}
+ 		return;
++
+ 	} else if (name != "redraw") {
+ 		return;
+ 	}
+@@ -1178,7 +1202,17 @@
+ 	if (color == -1) {
+ 		return fallback;
+ 	}
+-	return QRgb(color);
++	return QRgb(color);
++}
++
++QColor Shell::getBackground()
++{
++	return m_theme_background;
++}
++
++QColor Shell::getForeground()
++{
++	return m_theme_foreground;
+ }
+ 
+ /*
+diff -u -r neovim-qt-0.2.12.orig/src/gui/shell.h neovim-qt-0.2.12/src/gui/shell.h
+--- neovim-qt-0.2.12.orig/src/gui/shell.h	2019-05-29 02:00:04.235254336 -0400
++++ neovim-qt-0.2.12/src/gui/shell.h	2019-05-29 02:00:23.789253258 -0400
+@@ -50,6 +50,8 @@
+ 	~Shell();
+ 	QSize sizeIncrement() const;
+ 	static QColor color(qint64 color, const QColor& fallback=QColor());
++	QColor getBackground();
++	QColor getForeground();
+ 	static bool isBadMonospace(const QFont& f);
+ 	virtual QVariant inputMethodQuery(Qt::InputMethodQuery) const Q_DECL_OVERRIDE;
+ 	bool neovimBusy() const;
+@@ -77,6 +79,8 @@
+ 		const QString& buttons, int dfltbutton);
+ 	void neovimShowContextMenu();
+ 	void fontChanged();
++	void neovimGuiColorsAdaptiveEnabled(bool);
++	void neovimGuiFontAdaptiveEnabled(bool);
+ 
+ public slots:
+ 	void handleNeovimNotification(const QByteArray &name, const QVariantList& args);
+@@ -164,6 +168,7 @@
+ 	// use the values from above
+ 	QColor m_hg_foreground, m_hg_background, m_hg_special;
+ 	QColor m_cursor_color;
++	QColor m_theme_foreground, m_theme_background;
+ 
+ 	/// Cursor position in shell coordinates
+ 	QPoint m_cursor_pos;

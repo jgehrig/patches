@@ -1,0 +1,265 @@
+diff -r 1e8bc94b30d4 src/gui/mainwindow.cpp
+--- a/src/gui/mainwindow.cpp	Sun May 12 14:51:01 2019 -0400
++++ b/src/gui/mainwindow.cpp	Sun May 12 14:57:56 2019 -0400
+@@ -1,8 +1,10 @@
+ #include "mainwindow.h"
+ 
+ #include <QCloseEvent>
++#include <QLayout>
++#include <QMessageBox>
++#include <QStringList>
+ #include <QToolBar>
+-#include <QLayout>
+ 
+ namespace NeovimQt {
+ 
+@@ -100,6 +102,8 @@
+ 			this, &MainWindow::neovimTablineUpdate);
+ 	connect(m_shell, &Shell::neovimShowtablineSet,
+ 			this, &MainWindow::neovimShowtablineSet);
++	connect(m_shell, &Shell::neovimConfirmDialog,
++			this, &MainWindow::neovimConfirmDialog);
+ 	connect(m_shell, &Shell::neovimShowContextMenu,
+ 			this, &MainWindow::neovimShowContextMenu);
+ 	connect(m_actCut, &QAction::triggered,
+@@ -376,6 +380,124 @@
+ 	m_nvim->api0()->vim_command("normal! ggVG");
+ }
+ 
++static QMessageBox::StandardButton TryGetStandardButton(const QString& buttonText)
++{
++	static const QMap<QString, QMessageBox::StandardButton> s_buttonMap = {
++		{"OK",              QMessageBox::Ok},
++		{"OPEN",            QMessageBox::Open},
++		{"SAVE",            QMessageBox::Save},
++		{"CANCEL",          QMessageBox::Cancel},
++		{"CLOSE",           QMessageBox::Close},
++		{"DISCARD",         QMessageBox::Discard},
++		{"APPLY",           QMessageBox::Apply},
++		{"RESET",           QMessageBox::Reset},
++		{"RESTOREDEFAULTS", QMessageBox::RestoreDefaults},
++		{"HELP",            QMessageBox::Help},
++		{"SAVEALL",         QMessageBox::SaveAll},
++		{"YES",             QMessageBox::Yes},
++		{"YESTOALL",        QMessageBox::YesToAll},
++		{"NO",              QMessageBox::No},
++		{"NOTOALL",         QMessageBox::NoToAll},
++		{"ABORT",           QMessageBox::Abort},
++		{"RETRY",           QMessageBox::Retry},
++		{"IGNORE",          QMessageBox::Ignore} };
++
++	QString key = buttonText.toUpper();
++	key.remove('&');
++	key.remove(' ');
++
++	if (s_buttonMap.contains(key))
++	{
++		return s_buttonMap[key];
++	}
++
++	return QMessageBox::NoButton;
++}
++
++static QMessageBox::Icon GetIconType(int vim_enum)
++{
++	// Types defined by neovim in 'src/nvim/message.h'
++	constexpr int VIM_GENERIC   = 0;
++	constexpr int VIM_ERROR     = 1;
++	constexpr int VIM_WARNING   = 2;
++	constexpr int VIM_INFO      = 3;
++	constexpr int VIM_QUESTION  = 4;
++
++	switch (vim_enum)
++	{
++		case VIM_GENERIC:
++			return QMessageBox::NoIcon;
++
++		case VIM_ERROR:
++			return QMessageBox::Critical;
++
++		case VIM_WARNING:
++			return QMessageBox::Warning;
++
++		case VIM_INFO:
++			return QMessageBox::Information;
++
++		case VIM_QUESTION:
++			return QMessageBox::Question;
++
++		default:
++			return QMessageBox::NoIcon;
++	}
++}
++
++void MainWindow::neovimConfirmDialog(
++	int type,
++	const QString &title,
++	const QString &message,
++	const QString &buttons,
++	int dfltbutton)
++{
++	QMessageBox msgBox;
++	msgBox.setIcon(GetIconType(type));
++	msgBox.setText(title);
++	msgBox.setInformativeText(message);
++
++	// Parse `buttons` string and create QPushbutton objects for dialog.
++	const QStringList btnLabelList = buttons.split(QRegExp("\n"));
++	QList<QPushButton*> dlgButtonList;
++
++	for (const auto& buttonText : btnLabelList) {
++		QMessageBox::StandardButton stdButton = TryGetStandardButton(buttonText);
++
++		if (stdButton != QMessageBox::NoButton) {
++			dlgButtonList.append(msgBox.addButton(stdButton));
++			continue;
++		}
++
++		// Qt does not have this button, create a custom one.
++		dlgButtonList.append(msgBox.addButton(buttonText, QMessageBox::NoRole));
++	}
++
++	// Default button (index starts at 1).
++	if (dfltbutton > 0 && dfltbutton - 1 < dlgButtonList.size()) {
++		msgBox.setDefaultButton(dlgButtonList[dfltbutton - 1]);
++	}
++
++	// Show modal dialog (blocking)
++	const int returnCode = msgBox.exec();
++
++	// Explicitly call out dialog close button, handled as QMessageBox::Cancel.
++	if (returnCode == QMessageBox::Cancel) {
++		const char retValue = 0;
++		m_nvim->api0()->vim_input(QString(retValue).toLatin1());
++		return;
++	}
++
++	// Determine which button was clicked.
++	for (int i=0;i<dlgButtonList.size();i++) {
++		if (msgBox.clickedButton() == dlgButtonList[i]) {
++			const char retValue = i + 1;
++			m_nvim->api0()->vim_input(QString(retValue).toLatin1());
++			return;
++		}
++	}
++}
++
+ void MainWindow::changeTab(int index)
+ {
+ 	if (!m_shell_options.enable_ext_tabline) {
+diff -r 1e8bc94b30d4 src/gui/mainwindow.h
+--- a/src/gui/mainwindow.h	Sun May 12 14:51:01 2019 -0400
++++ b/src/gui/mainwindow.h	Sun May 12 14:57:56 2019 -0400
+@@ -48,6 +48,8 @@
+ 	void neovimIsUnsupported();
+ 	void neovimShowtablineSet(int);
+ 	void neovimTablineUpdate(int64_t curtab, QList<Tab> tabs);
++	void neovimConfirmDialog(int type, const QString &title,
++		const QString& message, const QString& buttons, int dfltbutton);
+ 	void neovimShowContextMenu();
+ 	void neovimSendCut();
+ 	void neovimSendCopy();
+diff -r 1e8bc94b30d4 src/gui/runtime/plugin/nvim_gui_shim.vim
+--- a/src/gui/runtime/plugin/nvim_gui_shim.vim	Sun May 12 14:51:01 2019 -0400
++++ b/src/gui/runtime/plugin/nvim_gui_shim.vim	Sun May 12 14:57:56 2019 -0400
+@@ -195,6 +195,13 @@
+ noremap <script> <Plug>GuiTreeviewToggle :call <SID>TreeViewToggle()
+ anoremenu <script> Gui.Treeview.Toggle :call <SID>TreeViewShowToggle()
+ 
++" Toggle between Terminal/GUI based dialogs
++function! s:GuiDialogs(enable) abort
++	call rpcnotify(0, 'Gui', 'Option', 'Dialogs', a:enable)
++endfunction
++command! -nargs=1 GuiDialogs call s:GuiDialogs(<args>)
++
++
+ " Show Right-Click ContextMenu
+ function s:GuiShowContextMenu() range
+ 	call rpcnotify(0, 'Gui', 'ShowContextMenu')
+diff -r 1e8bc94b30d4 src/gui/shell.cpp
+--- a/src/gui/shell.cpp	Sun May 12 14:51:01 2019 -0400
++++ b/src/gui/shell.cpp	Sun May 12 14:57:56 2019 -0400
+@@ -223,6 +223,8 @@
+ 	}
+ 	options.insert("rgb", true);
+ 
++	options.insert("ext_dialogs", true);
++
+ 	MsgpackRequest *req;
+ 	if (m_nvim->api2()) {
+ 		req = m_nvim->api2()->nvim_ui_attach(width, height, options);
+@@ -376,6 +378,28 @@
+ 				QPoint(right+1, bot+1));
+ }
+ 
++void Shell::handleConfirmDialog(const QVariantList& opargs)
++{
++	if (opargs.size() < 5 ||
++		!opargs.at(0).canConvert<int>() ||
++		!opargs.at(1).canConvert<QByteArray>() ||
++		!opargs.at(2).canConvert<QByteArray>() ||
++		!opargs.at(3).canConvert<QByteArray>() ||
++		!opargs.at(4).canConvert<int>()) {
++
++		qWarning() << "Unexpected arguments for confirm_dialog:" << opargs;
++		return;
++	}
++
++	const int type = opargs.at(0).toInt();
++	const QString title = m_nvim->decode(opargs.at(1).toByteArray());
++	const QString message = m_nvim->decode(opargs.at(2).toByteArray());
++	const QString buttons = m_nvim->decode(opargs.at(3).toByteArray());
++	const int dfltbutton = opargs.at(4).toInt();
++
++	emit neovimConfirmDialog(type, title, message, buttons, dfltbutton);
++}
++
+ void Shell::handleRedraw(const QByteArray& name, const QVariantList& opargs)
+ {
+ 	if (name == "update_fg") {
+@@ -524,6 +548,8 @@
+ 		// TODO
+ 	} else if (name == "default_colors_set") {
+ 		// TODO
++	} else if (name == "confirm_dialog") {
++		handleConfirmDialog(opargs);
+ 	} else {
+ 		qDebug() << "Received unknown redraw notification" << name << opargs;
+ 	}
+@@ -770,6 +796,8 @@
+ 		m_nvim->api2()->nvim_ui_set_option("ext_popupmenu", value.toBool());
+ 	} else if (name == "Cmdline") {
+ 	} else if (name == "Wildmenu") {
++	} else if (name == "Dialogs") {
++		m_nvim->api2()->nvim_ui_set_option("ext_dialogs", value.toBool());
+ 	} else {
+ 		qDebug() << "Unknown GUI Option" << name << value;
+ 	}
+@@ -798,6 +826,7 @@
+ 	} else if (name == "termguicolors") {
+ 	} else if (name == "ext_cmdline") {
+ 	} else if (name == "ext_wildmenu") {
++	} else if (name == "ext_dialogs") {
+ 	} else {
+ 		qDebug() << "Received unknown option" << name << value;
+ 	}
+diff -r 1e8bc94b30d4 src/gui/shell.h
+--- a/src/gui/shell.h	Sun May 12 14:51:01 2019 -0400
++++ b/src/gui/shell.h	Sun May 12 14:57:56 2019 -0400
+@@ -73,6 +73,8 @@
+ 	/// as seen in Tab::tab.
+ 	void neovimTablineUpdate(int64_t curtab, QList<Tab> tabs);
+ 	void neovimShowtablineSet(int);
++	void neovimConfirmDialog(int type, const QString &title, const QString& message,
++		const QString& buttons, int dfltbutton);
+ 	void neovimShowContextMenu();
+ 	void fontChanged();
+ 
+@@ -122,6 +124,7 @@
+ 	virtual void handleResize(uint64_t cols, uint64_t rows);
+ 	virtual void handlePut(const QVariantList& args);
+ 	virtual void handleHighlightSet(const QVariantMap& args);
++	virtual void handleConfirmDialog(const QVariantList& opargs);
+ 	virtual void handleRedraw(const QByteArray& name, const QVariantList& args);
+ 	virtual void handleScroll(const QVariantList& args);
+ 	virtual void handleModeChange(const QString& mode);

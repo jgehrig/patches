@@ -1,0 +1,708 @@
+diff -r 4b1e7fc8e839 src/gui/CMakeLists.txt
+--- a/src/gui/CMakeLists.txt	Sat Apr 04 00:59:26 2020 -0400
++++ b/src/gui/CMakeLists.txt	Sun Apr 26 17:11:22 2020 -0400
+@@ -48,6 +48,7 @@
+ 	mainwindow.cpp
+ 	popupmenu.cpp
+ 	popupmenumodel.cpp
++	scrollbar.cpp
+ 	shell.cpp
+ 	treeview.cpp
+ 	${SRCS_PLATFORM}
+diff -r 4b1e7fc8e839 src/gui/mainwindow.cpp
+--- a/src/gui/mainwindow.cpp	Sat Apr 04 00:59:26 2020 -0400
++++ b/src/gui/mainwindow.cpp	Sun Apr 26 17:11:22 2020 -0400
+@@ -3,7 +3,6 @@
+ #include <QCloseEvent>
+ #include <QLayout>
+ #include <QSettings>
+-#include <QSignalBlocker>
+ #include <QToolBar>
+ 
+ namespace NeovimQt {
+@@ -70,9 +69,7 @@
+ 	m_shell = new Shell(c, m_shell_options);
+ 
+ 	// GuiScrollBar
+-	m_rightScrollBar = new QScrollBar{};
+-	m_rightScrollBar->setVisible(false);
+-	m_rightScrollBar->setMinimum(1);
++	m_scrollbar = new ScrollBar{ m_nvim };
+ 
+ 	// ShellWidget + GuiScrollBar Layout
+ 	// QSplitter does not allow layouts directly: QWidget { HLayout { ShellWidget, QScrollBar } }
+@@ -81,7 +78,7 @@
+ 	layout->setSpacing(0);
+ 	layout->setMargin(0);
+ 	layout->addWidget(m_shell);
+-	layout->addWidget(m_rightScrollBar);
++	layout->addWidget(m_scrollbar);
+ 	shellScrollable->setLayout(layout);
+ 
+ 	m_window = new QSplitter();
+@@ -128,17 +125,6 @@
+ 			this, &MainWindow::neovimSendPaste);
+ 	connect(m_actSelectAll, &QAction::triggered,
+ 			this, &MainWindow::neovimSendSelectAll);
+-
+-	// GuiScrollBar Signal/Slot Connections
+-	connect(m_shell, &Shell::setGuiScrollBarVisible,
+-			this, &MainWindow::setGuiScrollBarVisible);
+-	connect(m_shell, &Shell::neovimCursorMovedUpdateScrollBar,
+-			this, &MainWindow::neovimCursorMovedUpdateScrollBar);
+-	connect(m_shell, &Shell::neovimScrollEvent,
+-			this, &MainWindow::neovimScrollEvent);
+-	connect(m_rightScrollBar, &QScrollBar::valueChanged,
+-			m_shell, &Shell::handleScrollBarChanged);
+-
+ 	m_shell->setFocus(Qt::OtherFocusReason);
+ 
+ 	if (m_nvim->errorCause()) {
+@@ -383,53 +369,6 @@
+ 	m_contextMenu->popup(QCursor::pos());
+ }
+ 
+-void MainWindow::setGuiScrollBarVisible(bool isEnabled)
+-{
+-	m_rightScrollBar->setVisible(isEnabled);
+-}
+-
+-void MainWindow::neovimCursorMovedUpdateScrollBar(uint64_t minLineVisible, uint64_t bufferSize, uint64_t windowHeight)
+-{
+-	if (!m_rightScrollBar->isVisible())
+-	{
+-		return;
+-	}
+-
+-	m_rightScrollBar->setMaximum(bufferSize);
+-	m_rightScrollBar->setPageStep(windowHeight);
+-
+-	m_scrollbarLastDelta = minLineVisible - m_rightScrollBar->sliderPosition();
+-
+-	// Block valueChanged signals for scroll events triggered by Neovim.
+-	// Do not be echoed back scroll events, only GUI events should be sent.
+-	{
+-		QSignalBlocker blockValueChanged{ m_rightScrollBar };
+-		m_rightScrollBar->setSliderPosition(minLineVisible);
+-	}
+-}
+-
+-void MainWindow::neovimScrollEvent(int64_t rows)
+-{
+-	if (!m_rightScrollBar->isVisible())
+-	{
+-		return;
+-	}
+-
+-	// Prevent double-registration of scroll event. See m_scrollbarLastDelta for details.
+-	if (rows == m_scrollbarLastDelta)
+-	{
+-		return;
+-	}
+-	m_scrollbarLastDelta = 0;
+-
+-	// Block valueChanged signals for scroll events triggered by Neovim.
+-	// Do not be echoed back scroll events, only GUI events should be sent.
+-	{
+-		QSignalBlocker blockValueChanged{ m_rightScrollBar };
+-		m_rightScrollBar->setSliderPosition(m_rightScrollBar->sliderPosition() + rows);
+-	}
+-}
+-
+ void MainWindow::neovimSendCut()
+ {
+ 	m_nvim->api0()->vim_command_output(R"(normal! "+x)");
+diff -r 4b1e7fc8e839 src/gui/mainwindow.h
+--- a/src/gui/mainwindow.h	Sat Apr 04 00:59:26 2020 -0400
++++ b/src/gui/mainwindow.h	Sun Apr 26 17:11:22 2020 -0400
+@@ -4,11 +4,11 @@
+ #include <QMainWindow>
+ #include <QStackedWidget>
+ #include <QTabBar>
+-#include <QScrollBar>
+ #include <QSplitter>
+ #include "treeview.h"
+ #include "neovimconnector.h"
+ #include "errorwidget.h"
++#include "scrollbar.h"
+ #include "shell.h"
+ 
+ namespace NeovimQt {
+@@ -58,10 +58,6 @@
+ 	void extTablineSet(bool);
+ 	void changeTab(int index);
+ 	void saveWindowGeometry();
+-	void setGuiScrollBarVisible(bool isVisible);
+-	void neovimCursorMovedUpdateScrollBar(
+-		uint64_t minLineVisible, uint64_t bufferSize, uint64_t windowHeigt);
+-	void neovimScrollEvent(int64_t rows);
+ 
+ private:
+ 	void init(NeovimConnector *);
+@@ -81,12 +77,7 @@
+ 	QAction *m_actCopy;
+ 	QAction *m_actPaste;
+ 	QAction *m_actSelectAll;
+-	QScrollBar *m_rightScrollBar;
+-
+-	/// The scrollbar updates on cursor movement and GUI paint/scroll events.
+-	/// In cases where the scroll event triggers cursor movement, this can result
+-	/// in double registration. Detect and ignore this double registration.
+-	int m_scrollbarLastDelta{ 0 };
++	ScrollBar *m_scrollbar;
+ };
+ 
+ } // Namespace
+diff -r 4b1e7fc8e839 src/gui/runtime/plugin/nvim_gui_shim.vim
+--- a/src/gui/runtime/plugin/nvim_gui_shim.vim	Sat Apr 04 00:59:26 2020 -0400
++++ b/src/gui/runtime/plugin/nvim_gui_shim.vim	Sun Apr 26 17:11:22 2020 -0400
+@@ -212,14 +212,14 @@
+ endfunction
+ 
+ " Notify Gui of any cursor movement, used by GuiScrollBar
+-function s:GuiCursorMovedUpdateScrollBar()
++function s:GuiCursorMoved()
+ 	let l:minLineVisible = line('w0')
+ 	let l:bufferSize = line('$')
+ 	let l:windowHeight = winheight(winnr())
+-	call rpcnotify(0, 'Gui', 'CursorMovedUpdateScrollBar', l:minLineVisible, l:bufferSize, l:windowHeight)
++	call rpcnotify(0, 'Gui', 'CursorMoved', l:minLineVisible, l:bufferSize, l:windowHeight)
+ endfunction
+ 
+-autocmd CursorMoved,CursorMovedI,VimResized * call <SID>GuiCursorMovedUpdateScrollBar()
++autocmd CursorMoved,CursorMovedI,VimResized * call <SID>GuiCursorMoved()
+ 
+ " Show/Hide the Gui ScrollBar
+ function! s:GuiScrollBar(enable) abort
+diff -r 4b1e7fc8e839 src/gui/scrollbar.cpp
+--- /dev/null	Thu Jan 01 00:00:00 1970 +0000
++++ b/src/gui/scrollbar.cpp	Sun Apr 26 17:11:22 2020 -0400
+@@ -0,0 +1,230 @@
++#include "scrollbar.h"
++
++#include "shell.h"
++
++namespace NeovimQt {
++
++ScrollBar::ScrollBar(NeovimConnector* nvim, QWidget* parent) noexcept
++	: QScrollBar{ parent }
++	, m_nvim{ nvim }
++{
++	if (!m_nvim) {
++		qFatal("Fatal Error: ScrollBar must have a valid NeovimConnector!");
++	}
++
++	connect(m_nvim, &NeovimConnector::ready, this, &ScrollBar::neovimConnectorReady);
++	connect(this, &QScrollBar::valueChanged, this, &ScrollBar::handleValueChanged);
++
++	setVisible(false);
++	setMinimum(1);
++}
++
++void ScrollBar::neovimConnectorReady() noexcept
++{
++	connect(m_nvim->api0(), &NeovimApi0::neovimNotification,
++		this, &ScrollBar::handleNeovimNotification);
++
++	m_nvim->api0()->vim_subscribe("Gui");
++}
++
++bool ScrollBar::IsWinViewportSupported() const noexcept
++{
++	static const bool isSupported{ m_nvim->apiLevel() >= 7 };
++	return isSupported;
++}
++
++void ScrollBar::handleNeovimNotification(const QByteArray& name, const QVariantList& args) noexcept
++{
++	if (args.size() <= 0) {
++		return;
++	}
++
++	if (name == "Gui") {
++		const QString guiEvName{ m_nvim->decode(args.at(0).toByteArray()) };
++
++		if (guiEvName == "CursorMoved") {
++			handleCursorMoved(args);
++			return;
++		}
++
++		if (guiEvName == "SetScrollBarVisible") {
++			handleSetScrollBarVisible(args);
++			return;
++		}
++	}
++
++	if (name == "redraw") {
++		Shell::DispatchRedrawNotifications<ScrollBar>(this, args);
++		return;
++	}
++}
++
++void ScrollBar::handleRedraw(const QByteArray& name, const QVariantList& args) noexcept
++{
++	if (name == "grid_scroll") {
++		handleGridScroll(args);
++		return;
++	}
++
++	if (name == "scroll") {
++		handleScroll(args);
++		return;
++	}
++
++	if (name == "win_viewport") {
++		handleWinViewport(args);
++		return;
++	}
++}
++
++void ScrollBar::setIsVisible(bool isVisible)
++{
++	setVisible(isVisible);
++}
++
++void ScrollBar::setAbsolutePosition(uint64_t minLine, uint64_t bufferSize, uint64_t windowHeight)
++{
++	// FIXME narowing conversion... Bad programmer! -_-
++	const int delta = minLine - m_lastKnownPosition;
++
++	// FIXME Comment
++	m_lastKnownPosition = minLine;
++	m_lastKnownBufferSize = bufferSize;
++	m_lastKnownWindowHeight = windowHeight;
++
++	m_lineScrollLockout -= delta;
++
++	// Block valueChanged signals for scroll events triggered by Neovim.
++	{
++		QSignalBlocker blockValueChanged{ this };
++
++		setMaximum(bufferSize);
++		setPageStep(windowHeight);
++		setSliderPosition(minLine);
++	}
++}
++
++void ScrollBar::setRelativePosition(int64_t rowCount)
++{
++	// Stores last scroll size to prevent double-registration.
++	m_lineScrollLockout -= rowCount;
++
++	// Block valueChanged signals for scroll events triggered by Neovim.
++	{
++		QSignalBlocker blockValueChanged{ this };
++
++		setSliderPosition(sliderPosition() + rowCount);
++	}
++}
++
++void ScrollBar::handleScroll(const QVariantList& args) noexcept
++{
++	// With win_viewport supported, scroll events aren't needed.
++	if (IsWinViewportSupported()) {
++		return;
++	}
++
++	if (args.size() < 1 || !args.at(0).canConvert<int64_t>()) {
++		return;
++	}
++
++	const int64_t count{ args.at(0).toLongLong() };
++
++	setRelativePosition(count);
++}
++
++void ScrollBar::handleGridScroll(const QVariantList& args) noexcept
++{
++	// With win_viewport supported, scroll events aren't needed.
++	if (IsWinViewportSupported()) {
++		return;
++	}
++
++	if (args.size() < 6 || !args.at(5).canConvert<uint64_t>()) {
++		return;
++	}
++
++	const int64_t rows{ args.at(5).toLongLong() };
++
++	setRelativePosition(rows);
++}
++
++void ScrollBar::handleWinViewport(const QVariantList& args) noexcept
++{
++	if (args.size() < 6
++		|| !args.at(0).canConvert<uint64_t>()
++		|| !args.at(1).canConvert<uint64_t>()
++		|| !args.at(2).canConvert<uint64_t>()
++		|| !args.at(3).canConvert<uint64_t>()
++		|| !args.at(4).canConvert<uint64_t>()
++		|| !args.at(5).canConvert<uint64_t>()) {
++		qWarning() << "Unexpected arguments for win_viewport:" << args;
++		return;
++	}
++
++	//const uint64_t grid { args.at(0).toULongLong() };
++	//const uint64_t win { args.at(1).toULongLong() };
++	//const uint64_t botline { args.at(3).toULongLong() };
++	//const uint64_t curline { args.at(4).toULongLong() };
++	//const uint64_t curcol { args.at(5).toULongLong() };
++
++	const uint64_t topline { args.at(2).toULongLong() };
++
++	setAbsolutePosition(topline, m_lastKnownBufferSize, m_lastKnownWindowHeight);
++}
++
++
++void ScrollBar::handleCursorMoved(const QVariantList& args) noexcept
++{
++	if (args.size() < 4
++		|| !args.at(1).canConvert<uint64_t>()
++		|| !args.at(2).canConvert<uint64_t>()
++		|| !args.at(3).canConvert<uint64_t>()) {
++		qWarning() << "Unexpected arguments for CursorMoved:" << args;
++		return;
++	}
++
++	const uint64_t minLineVisible{ args.at(1).toULongLong() };
++	const uint64_t bufferSize{ args.at(2).toULongLong() };
++	const uint64_t windowHeight{ args.at(3).toULongLong() };
++
++	setAbsolutePosition(minLineVisible, bufferSize, windowHeight);
++}
++
++void ScrollBar::handleSetScrollBarVisible(const QVariantList& args) noexcept
++{
++	if (args.size() < 2
++		|| !args.at(1).canConvert<bool>()) {
++		qWarning() << "Unexpected arguments for SetScrollBarVisible:" << args;
++		return;
++	}
++
++	const bool isVisible{ args.at(1).toBool() };
++	setVisible(isVisible);
++}
++
++void ScrollBar::handleValueChanged(int value)
++{
++	const int delta{ m_lastKnownPosition - value};
++	if (delta == 0) {
++		return;
++	}
++
++	m_lineScrollLockout += delta;
++
++	// Scroll Up: normal! {Control + Y}
++	// MSVC cannot parse the un-escaped sequence below `^Y`.
++	if (delta > 0) {
++		m_nvim->api0()->vim_command(
++			QStringLiteral("normal! %1\031").arg(delta).toLatin1());
++	}
++
++	// Scroll Down normal! {Control + E}
++	// MSVC cannot parse the un-escaped sequence below `^E`.
++	if (delta < 0) {
++		m_nvim->api0()->vim_command(
++			QStringLiteral("normal! %1\005").arg(delta).toLatin1());
++	}
++}
++
++} // namespace NeovimQt
+diff -r 4b1e7fc8e839 src/gui/scrollbar.h
+--- /dev/null	Thu Jan 01 00:00:00 1970 +0000
++++ b/src/gui/scrollbar.h	Sun Apr 26 17:11:22 2020 -0400
+@@ -0,0 +1,58 @@
++#pragma once
++
++#include <QScrollBar>
++
++#include "neovimconnector.h"
++
++namespace NeovimQt {
++
++class ScrollBar : public QScrollBar
++{
++	Q_OBJECT
++
++public:
++	ScrollBar(NeovimConnector* nvim, QWidget* parent = nullptr) noexcept;
++
++	/// Checks the nvim client for support of win_viewport events.
++	bool IsWinViewportSupported() const noexcept;
++
++	void handleNeovimNotification(const QByteArray& name, const QVariantList& args) noexcept;
++	void handleRedraw(const QByteArray& name, const QVariantList& opargs) noexcept;
++
++public slots:
++	void setIsVisible(bool isVisible);
++	void setAbsolutePosition(uint64_t minLine, uint64_t bufferSize, uint64_t windowHeight);
++	void setRelativePosition(int64_t rowCount);
++
++private:
++	void neovimConnectorReady() noexcept;
++
++	// Gui Events
++	void handleCursorMoved(const QVariantList& opargs) noexcept;
++	void handleSetScrollBarVisible(const QVariantList& opargs) noexcept;
++
++	// Redraw Events
++	void handleGridScroll(const QVariantList& opargs) noexcept;
++	void handleScroll(const QVariantList& opargs) noexcept;
++	void handleWinViewport(const QVariantList& opargs) noexcept;
++
++	/// Attached to valueChanged signal. Sends scroll commands to Neovim API.
++	void handleValueChanged(int value);
++
++	NeovimConnector *m_nvim{ nullptr };
++
++	/// FIXME Add comment
++	int m_lineScrollLockout{ 0 };
++
++	/// Last known cursor position. Cursor position is in absolute units, and scroll
++	/// commands are sent with relative units. Necessary for conversion.
++	int m_lastKnownPosition{ 0 };
++
++	/// Workaround for win_viewport. Saves buffer size from last cursor movement.
++	int m_lastKnownBufferSize{ 0 };
++
++	/// Workaround for win_viewport. Saves window height from last cursor movement.
++	int m_lastKnownWindowHeight{ 0 };
++};
++
++} // namespace NeovimQt
+diff -r 4b1e7fc8e839 src/gui/shell.cpp
+--- a/src/gui/shell.cpp	Sat Apr 04 00:59:26 2020 -0400
++++ b/src/gui/shell.cpp	Sun Apr 26 17:11:22 2020 -0400
+@@ -380,8 +380,6 @@
+ 	scrollShellRegion(m_scroll_region.top(), m_scroll_region.bottom(),
+ 			m_scroll_region.left(), m_scroll_region.right(),
+ 			count);
+-
+-	emit neovimScrollEvent(count);
+ }
+ 
+ void Shell::handleSetScrollRegion(const QVariantList& opargs)
+@@ -542,8 +540,8 @@
+ 	} else if (name == "grid_scroll") {
+ 		handleGridScroll(opargs);
+ 	} else if (name == "hl_group_set") {
+-	}
+-	else {
++	} else if (name == "win_viewport") {
++	} else {
+ 		qDebug() << "Received unknown redraw notification" << name << opargs;
+ 	}
+ 
+@@ -828,41 +826,13 @@
+ 			QGuiApplication::clipboard()->setMimeData(clipData, clipboard);
+ 		} else if (guiEvName == "ShowContextMenu") {
+ 			emit neovimShowContextMenu();
+-		} else if (guiEvName == "CursorMovedUpdateScrollBar") {
+-			handleCursorMovedUpdateScrollBar(args);
+-		} else if (guiEvName == "SetScrollBarVisible") {
+-			handleSetScrollBarVisible(args);
+ 		}
+ 		return;
+ 	} else if (name != "redraw") {
+ 		return;
+ 	}
+ 
+-	foreach(const QVariant& update_item, args) {
+-		if ((QMetaType::Type)update_item.type() != QMetaType::QVariantList) {
+-			qWarning() << "Received unexpected redraw operation" << update_item;
+-			continue;
+-		}
+-
+-		const QVariantList& redrawupdate = update_item.toList();
+-		if (redrawupdate.size() < 2) {
+-			qWarning() << "Received unexpected redraw operation" << update_item;
+-			continue;
+-		}
+-
+-		const QByteArray& name = redrawupdate.at(0).toByteArray();
+-		const QVariantList& update_args = redrawupdate.mid(1);
+-
+-		foreach (const QVariant& opargs_var, update_args) {
+-			if ((QMetaType::Type)opargs_var.type() != QMetaType::QVariantList) {
+-				qWarning() << "Received unexpected redraw arguments, expecting list" << opargs_var;
+-				continue;
+-			}
+-
+-			const QVariantList& opargs = opargs_var.toList();
+-			handleRedraw(name, opargs);
+-		}
+-	}
++	DispatchRedrawNotifications(this, args);
+ }
+ 
+ void Shell::handleExtGuiOption(const QString& name, const QVariant& value)
+@@ -1126,39 +1096,6 @@
+ 
+ 	// Draw new cursor
+ 	update(neovimCursorRect());
+-
+-	emit neovimScrollEvent(rows);
+-}
+-
+-void Shell::handleCursorMovedUpdateScrollBar(const QVariantList& opargs) noexcept
+-{
+-	if (opargs.size() < 4
+-		|| !opargs.at(1).canConvert<uint64_t>()
+-		|| !opargs.at(2).canConvert<uint64_t>()
+-		|| !opargs.at(3).canConvert<uint64_t>()) {
+-		qWarning() << "Unexpected arguments for CursorMovedUpdateScrollBar:" << opargs;
+-		return;
+-	}
+-
+-	const uint64_t minLineVisible{ opargs.at(1).toULongLong() };
+-	const uint64_t bufferSize{ opargs.at(2).toULongLong() };
+-	const uint64_t windowHeight{ opargs.at(3).toULongLong() };
+-
+-	m_lastScrollBarPosition = minLineVisible;
+-
+-	emit neovimCursorMovedUpdateScrollBar(minLineVisible, bufferSize, windowHeight);
+-}
+-
+-void Shell::handleSetScrollBarVisible(const QVariantList& opargs) noexcept
+-{
+-	if (opargs.size() < 2
+-		|| !opargs.at(1).canConvert<bool>()) {
+-		qWarning() << "Unexpected arguments for SetScrollBarVisible:" << opargs;
+-		return;
+-	}
+-
+-	const bool isVisible{ opargs.at(1).toBool() };
+-	emit setGuiScrollBarVisible(isVisible);
+ }
+ 
+ void Shell::paintEvent(QPaintEvent *ev)
+@@ -1698,35 +1635,6 @@
+ 	}
+ }
+ 
+-void Shell::handleScrollBarChanged(int position)
+-{
+-	if (m_lastScrollBarPosition == position) {
+-		return;
+-	}
+-
+-	const int delta{ m_lastScrollBarPosition - position };
+-
+-	if (delta == 0) {
+-		return;
+-	}
+-
+-	// Scroll Up: normal! {Control + Y}
+-	if (delta > 0) {
+-		m_nvim->api0()->vim_command(
+-			QStringLiteral("normal! %1\031").arg(delta).toLatin1());
+-	}
+-
+-	// Scroll Down normal! {Control + E}
+-	if (delta < 0) {
+-		m_nvim->api0()->vim_command(
+-			QStringLiteral("normal! %1\005").arg(delta).toLatin1());
+-	}
+-
+-	// NOTE: MSVC cannot parse the unescaped sequences above: `^E` and `^Y`.
+-
+-	m_lastScrollBarPosition = position;
+-}
+-
+ // If neovim is blocked waiting for input, attempt to bailout from
+ // whatever neovim is doing by pressing Ctrl-C.
+ void Shell::bailoutIfinputBlocking()
+diff -r 4b1e7fc8e839 src/gui/shell.h
+--- a/src/gui/shell.h	Sat Apr 04 00:59:26 2020 -0400
++++ b/src/gui/shell.h	Sun Apr 26 17:11:22 2020 -0400
+@@ -56,6 +56,11 @@
+ 	bool neovimAttached() const;
+ 	QString fontDesc();
+ 
++	/// Dispatches Neovim redraw notifications to T::handleRedraw
++	template <class T>
++	static void DispatchRedrawNotifications(
++		T* pThis, const QVariantList& args) noexcept;
++
+ signals:
+ 	void neovimTitleChanged(const QString &title);
+ 	void neovimBusy(bool);
+@@ -76,12 +81,6 @@
+ 	void neovimShowContextMenu();
+ 	void fontChanged();
+ 
+-	// GuiScrollBar Signals
+-	void neovimCursorMovedUpdateScrollBar(
+-		uint64_t minLineVisible, uint64_t bufferSize, uint64_t windowHeight);
+-	void neovimScrollEvent(int64_t rows);
+-	void setGuiScrollBarVisible(bool isVisible);
+-
+ public slots:
+ 	void handleNeovimNotification(const QByteArray &name, const QVariantList& args);
+ 	void resizeNeovim(const QSize&);
+@@ -90,9 +89,6 @@
+ 	void updateGuiWindowState(Qt::WindowStates state);
+ 	void openFiles(const QList<QUrl> url);
+ 
+-	/// Update the Neovim buffer position after a gui-triggered scrollbar event
+-	void handleScrollBarChanged(int position);
+-
+ protected slots:
+ 	void neovimError(NeovimConnector::NeovimError);
+ 	void neovimExited(int);
+@@ -149,10 +145,6 @@
+ 	virtual void handleGridCursorGoto(const QVariantList& opargs);
+ 	virtual void handleGridScroll(const QVariantList& opargs);
+ 
+-	// GuiScrollBar Slots
+-	virtual void handleCursorMovedUpdateScrollBar(const QVariantList& opargs) noexcept;
+-	virtual void handleSetScrollBarVisible(const QVariantList& opargs) noexcept;
+-
+ 	void neovimMouseEvent(QMouseEvent *ev);
+ 	virtual void mousePressEvent(QMouseEvent *ev) Q_DECL_OVERRIDE;
+ 	virtual void mouseReleaseEvent(QMouseEvent *ev) Q_DECL_OVERRIDE;
+@@ -207,9 +199,6 @@
+ 	ShellOptions m_options;
+ 	PopupMenu m_pum{ this };
+ 	bool m_mouseEnabled{ true };
+-
+-	/// GuiScrollBar last known position: used to compute scroll line delta.
+-	int m_lastScrollBarPosition{ 0 };
+ };
+ 
+ class ShellRequestHandler: public QObject, public MsgpackRequestHandler
+@@ -220,6 +209,34 @@
+ 	virtual void handleRequest(MsgpackIODevice* dev, quint32 msgid, const QByteArray& method, const QVariantList& args);
+ };
+ 
++template <class T>
++/*static*/ void Shell::DispatchRedrawNotifications(T* pThis, const QVariantList& args) noexcept
++{
++	for(const auto& update_item : args) {
++		if (!update_item.canConvert<QVariantList>()) {
++			qWarning() << "Received unexpected redraw operation" << update_item;
++			continue;
++		}
++
++		const QVariantList& redrawupdate{ update_item.toList() };
++		if (redrawupdate.size() < 2) {
++			qWarning() << "Received unexpected redraw operation" << update_item;
++			continue;
++		}
++
++		const QByteArray& name{ redrawupdate.at(0).toByteArray() };
++		const QVariantList& update_args{ redrawupdate.mid(1) };
++
++		for(const auto& opargs_var : update_args) {
++			if (!opargs_var.canConvert<QVariantList>()) {
++				qWarning() << "Received unexpected redraw arguments, expecting list" << opargs_var;
++				continue;
++			}
++
++			pThis->handleRedraw(name, opargs_var.toList());
++		}
++	}
++}
+ 
+ } // Namespace
+ #endif
